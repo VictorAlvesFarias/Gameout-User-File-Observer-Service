@@ -361,3 +361,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# ------------------------------------------------------------------ Electron app
+node_modules/
+client/dist/
+desktop/dist/
+release/
+*.tsbuildinfo
+.gameout-driver/

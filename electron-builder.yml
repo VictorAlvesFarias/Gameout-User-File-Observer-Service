@@ -1,0 +1,25 @@
+appId: com.victoralves.gameoutdriver
+productName: Gameout Driver
+directories:
+  output: release
+  buildResources: build
+files:
+  - package.json
+  - desktop/dist/**
+# The UI is served by express from a plain folder, outside app.asar; the icon is also used by the tray.
+extraResources:
+  - from: client/dist
+    to: client
+  - from: build/icon.png
+    to: icon.png
+win:
+  target: nsis
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Gameout Driver
+  artifactName: Gameout-Driver-Setup-${version}.exe

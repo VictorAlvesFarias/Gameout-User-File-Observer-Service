@@ -1,0 +1,26 @@
+{
+  "name": "gameout-driver",
+  "version": "2.0.0",
+  "description": "Gameout Driver: observa as pastas do Gameout e envia os backups para o servidor",
+  "author": "Victor Alves Farias",
+  "private": true,
+  "type": "module",
+  "main": "desktop/dist/main.mjs",
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "test": "npm run test -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client && tsc -p desktop",
+    "desktop:bundle": "node desktop/bundle.mjs",
+    "desktop": "npm run build && npm run desktop:bundle && node desktop/run.mjs",
+    "dist": "npm run build && npm run desktop:bundle && electron-builder --win"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
+  }
+}
