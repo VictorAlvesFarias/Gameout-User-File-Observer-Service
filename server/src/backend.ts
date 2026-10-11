@@ -58,8 +58,9 @@ export class Backend {
     return this.request<RemoteGroup[]>('GET', '/get-files', { traceId });
   }
 
+  /** Groups created here keep every version; the web can turn that off. */
   createGroup(name: string, traceId = ''): Promise<RemoteGroup> {
-    return this.request<RemoteGroup>('POST', '/upload-file', { body: { name }, traceId });
+    return this.request<RemoteGroup>('POST', '/upload-file', { body: { name, versionControl: true }, traceId });
   }
 
   async newTraceId(): Promise<string> {

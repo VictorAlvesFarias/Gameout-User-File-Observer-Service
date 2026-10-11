@@ -94,7 +94,7 @@ export function FolderDialog({ folder, canPickFolder, onClose, onNotify }: Folde
           <label className="field">
             <span>Nome do grupo</span>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Elden Ring" maxLength={120} required autoFocus />
-            <small className="muted">Aparece no site. O versionamento é configurado lá.</small>
+            <small className="muted">Aparece no site. Guarda todas as versões; isso pode ser mudado lá.</small>
           </label>
         )}
         <label className="field">

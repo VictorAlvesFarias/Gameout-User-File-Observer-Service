@@ -51,7 +51,7 @@ A group (an `AppFile` on the backend) only has a name and its versioning, set on
 - **Enviar sozinho quando a pasta mudar**: a change starts a backup.
 - **Marcar como desatualizado quando a pasta mudar**: a change reports the group as unsynced; the folder is also compared with the latest version when the driver starts and when a problem goes away.
 
-A burst of changes counts once the folder has been quiet for 5 s. **Novo grupo** creates the group on the backend from a folder chosen here; groups created on the web show up within a minute (or with the refresh button).
+A burst of changes counts once the folder has been quiet for 5 s. **Novo grupo** creates the group on the backend from a folder chosen here, keeping every version (the web can turn that off); groups created on the web show up within a minute (or with the refresh button).
 
 ## How it works
 
