@@ -9,15 +9,12 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "amqplib": "^2.2.0",
     "express": "^5.1.0",
-    "ws": "^8.22.0",
     "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/node": "^24.0.0",
-    "@types/ws": "^8.18.2",
     "@types/yazl": "^3.3.1",
     "typescript": "^5.9.0"
   }

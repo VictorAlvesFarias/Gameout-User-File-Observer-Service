@@ -6,8 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { compareWithLastSync, scanFolder, uploadFile, zipFolder } from '../src/backup.ts';
-import { parseCommand, parseStatusCheck } from '../src/protocol.ts';
-import { parseSettings, socketUrlOf, defaultSettings } from '../src/store.ts';
+import { toFolder } from '../src/driver.ts';
+import { configurePaths, dataFile } from '../src/paths.ts';
+import { statusName } from '../src/protocol.ts';
+import { defaultSettings, load, parseSettings, saveLocalFolder } from '../src/store.ts';
+import { folderPath } from '../src/validation.ts';
 
 async function sampleFolder() {
   const root = await mkdtemp(join(tmpdir(), 'driver-test-'));
@@ -17,15 +20,19 @@ async function sampleFolder() {
   return root;
 }
 
-test('commands are read in camelCase (backend) and PascalCase (old senders)', () => {
-  const camel = parseCommand('{"command":"StartBackup","appFileId":3,"userId":"u-1","path":"C:\\\\Games","traceId":"42","payloadJson":null}');
-  assert.equal(camel.command, 'StartBackup');
-  assert.equal(camel.appFileId, 3);
-  assert.equal(camel.path, 'C:\\Games');
-  const pascal = parseCommand('{"Command":"ScanDirectories","AppFileId":7,"PayloadJson":"{\\"LastSyncedFileSize\\":10}"}');
-  assert.equal(pascal.command, 'ScanDirectories');
-  assert.equal(pascal.appFileId, 7);
-  assert.equal(parseStatusCheck(pascal.payloadJson, { appFileId: 7, path: 'x' }).lastSyncedFileSize, 10);
+test('a group joins the backend data with this PC folder', () => {
+  const group = { id: 4, name: 'Elden Ring', versionControl: true, status: 4, statusMessage: 'Alterada', lastSyncedAt: '2026-10-11T12:00:00Z', lastSyncedSize: 10 };
+  const local = { path: 'C:\\Saves\\ER', observer: true, autoValidateSync: false };
+  const folder = toFolder(group, local);
+  assert.equal(folder.status, 'Unsynced');
+  assert.equal(folder.local, local);
+  assert.equal(folder.lastSyncedSize, 10);
+  assert.equal(toFolder(group, null).local, null);
+  // What this PC saw survives a refresh.
+  const lastSync = { at: '2026-10-11T12:00:00Z', ok: true, message: '2 arquivo(s)' };
+  assert.equal(toFolder(group, local, { ...folder, lastSync }).lastSync, lastSync);
+  assert.equal(statusName(6), 'LockedFiles');
+  assert.equal(statusName(99), null);
 });
 
 test('status check: same size and nothing newer is synced', async () => {
@@ -36,13 +43,12 @@ test('status check: same size and nothing newer is synced', async () => {
     assert.equal(scan.totalSize, 200_010);
     assert.deepEqual(scan.files.map((file) => file.entry).sort(), ['config.ini', 'saves/slot1/game.sav']);
 
-    const later = new Date(Date.now() + 60_000);
-    const localIso = (date: Date) => new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 19);
-    const payload = { appFileId: 1, path: root, lastSyncedFileSize: 200_010, lastSyncedFileDate: localIso(later) };
-    assert.equal(compareWithLastSync(scan, payload), 'Synced');
-    assert.equal(compareWithLastSync(scan, { ...payload, lastSyncedFileSize: 5 }), 'Unsynced');
-    assert.equal(compareWithLastSync(scan, { ...payload, lastSyncedFileDate: '2020-01-01T00:00:00' }), 'Unsynced');
-    assert.equal(compareWithLastSync(scan, { ...payload, lastSyncedFileSize: null }), 'Unsynced');
+    // The backend sends the version date in UTC ("Z").
+    const last = { lastSyncedSize: 200_010, lastSyncedAt: new Date(Date.now() + 60_000).toISOString() };
+    assert.equal(compareWithLastSync(scan, last), 'Synced');
+    assert.equal(compareWithLastSync(scan, { ...last, lastSyncedSize: 5 }), 'Unsynced');
+    assert.equal(compareWithLastSync(scan, { ...last, lastSyncedAt: '2020-01-01T00:00:00Z' }), 'Unsynced');
+    assert.equal(compareWithLastSync(scan, { ...last, lastSyncedSize: null }), 'Unsynced');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -129,14 +135,44 @@ test('upload failure carries the MinIO answer', async () => {
   }
 });
 
-test('settings: validation and the derived WebSocket address', () => {
-  const settings = parseSettings({ ...defaultSettings(), backendUrl: 'https://localhost:7000/' });
-  assert.equal(settings.backendUrl, 'https://localhost:7000');
-  assert.equal(socketUrlOf(settings), 'wss://localhost:7000/ws');
-  assert.equal(socketUrlOf({ ...settings, socketUrl: 'ws://other:1/ws' }), 'ws://other:1/ws');
-  assert.throws(() => parseSettings({ ...defaultSettings(), backendUrl: 'ftp://x' }));
-  assert.throws(() => parseSettings({ ...defaultSettings(), rabbitPort: 70000 }));
-  assert.throws(() => parseSettings({ ...defaultSettings(), commandExchange: 'bad name' }));
+test('settings: server address validation', () => {
+  assert.equal(parseSettings({ ...defaultSettings(), backendUrl: 'https://localhost:7000/' }).backendUrl, 'https://localhost:7000');
+  assert.throws(() => parseSettings({ backendUrl: 'ftp://x' }));
+  assert.throws(() => parseSettings({ backendUrl: '' }));
+});
+
+test('folders must be full Windows paths', () => {
+  assert.equal(folderPath({ path: 'C:\\Jogos\\Saves\\' }, 'path', 'Pasta'), 'C:\\Jogos\\Saves');
+  assert.equal(folderPath({ path: 'd:/games/saves' }, 'path', 'Pasta'), 'd:\\games\\saves');
+  assert.equal(folderPath({ path: 'C:\\' }, 'path', 'Pasta'), 'C:\\');
+  assert.equal(folderPath({ path: '\\\\nas\\backup\\saves' }, 'path', 'Pasta'), '\\\\nas\\backup\\saves');
+  assert.throws(() => folderPath({ path: 'saves' }, 'path', 'Pasta'), /caminho completo/);
+  assert.throws(() => folderPath({ path: 'C:saves' }, 'path', 'Pasta'), /caminho completo/);
+  assert.throws(() => folderPath({ path: '' }, 'path', 'Pasta'), /obrigatório/);
+});
+
+test('data of older versions drops the RabbitMQ settings and keeps the folders per group', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'driver-home-'));
+  configurePaths({ dataDir: home });
+  try {
+    const old = { settings: { backendUrl: 'http://srv:8201', rabbitHost: 'srv', socketUrl: '' }, protectedSecrets: { rabbitPassword: 'cipher' } };
+    await writeFile(dataFile(), JSON.stringify(old));
+    const loaded = await load();
+    assert.deepEqual(loaded.settings, { backendUrl: 'http://srv:8201' });
+    assert.equal(loaded.secrets.apiKey, '');
+    assert.deepEqual(loaded.folders, {});
+
+    await saveLocalFolder(7, { path: 'C:\\Saves', observer: true, autoValidateSync: true });
+    const saved = JSON.parse(await readFile(dataFile(), 'utf8'));
+    assert.deepEqual(saved.folders['7'], { path: 'C:\\Saves', observer: true, autoValidateSync: true });
+    assert.equal(saved.protectedSecrets.rabbitPassword, undefined);
+    assert.equal((await load()).folders['7'].path, 'C:\\Saves');
+
+    await saveLocalFolder(7, null);
+    assert.deepEqual(JSON.parse(await readFile(dataFile(), 'utf8')).folders, {});
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test('mtime is kept on scanned files', async () => {

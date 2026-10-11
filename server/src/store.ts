@@ -2,73 +2,62 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dataFile, paths } from './paths.ts';
 import { protect, unprotect } from './secrets.ts';
-import { amqpNameField, integer, text, url, type Body } from './validation.ts';
+import { url, type Body } from './validation.ts';
 
-/** Everything that is not secret. The names match the backend's appsettings (RabbitMQ section). */
 export interface Settings {
   backendUrl: string;
-  /** Empty: derived from backendUrl (http -> ws, + /ws). */
-  socketUrl: string;
-  rabbitHost: string;
-  rabbitPort: number;
-  rabbitVirtualHost: string;
-  rabbitUser: string;
-  commandExchange: string;
-  eventExchange: string;
-  driverQueuePrefix: string;
-  eventQueue: string;
-  prefetch: number;
 }
 
 export interface Secrets {
   apiKey: string;
-  rabbitPassword: string;
 }
 
 export type SecretName = keyof Secrets;
+
+/**
+ * How this PC feeds a group: which folder, and what to do when it changes. Kept only here, so each
+ * PC can use its own folder for the same group.
+ */
+export interface LocalFolder {
+  path: string;
+  /** Changes start a backup. */
+  observer: boolean;
+  /** Changes mark the group as unsynced. */
+  autoValidateSync: boolean;
+}
 
 interface Data {
   settings: Settings;
   /** DPAPI ciphertext (base64) per secret. */
   protectedSecrets: Partial<Record<SecretName, string>>;
+  /** By group id. */
+  folders: Record<string, LocalFolder>;
 }
 
-/** Defaults match My-Personal-Compose (backend on 8201, RabbitMQ user "admin"). */
+/** Default matches My-Personal-Compose (backend on 8201). */
 export const defaultSettings = (): Settings => ({
   backendUrl: 'http://localhost:8201',
-  socketUrl: '',
-  rabbitHost: 'localhost',
-  rabbitPort: 5672,
-  rabbitVirtualHost: '/',
-  rabbitUser: 'admin',
-  commandExchange: 'gameout.driver.commands',
-  eventExchange: 'gameout.driver.events',
-  driverQueuePrefix: 'gameout.driver.commands.',
-  eventQueue: 'gameout.driver.events.backend',
-  prefetch: 10,
 });
 
 export function parseSettings(body: Body): Settings {
-  const defaults = defaultSettings();
   return {
     backendUrl: url(body, 'backendUrl', 'Endereço do servidor', ['http:', 'https:']),
-    socketUrl: url(body, 'socketUrl', 'Endereço do WebSocket', ['ws:', 'wss:'], { required: false }),
-    rabbitHost: text(body, 'rabbitHost', 'Servidor do RabbitMQ', { required: true, max: 200, pattern: /^[A-Za-z0-9.-]+$/ }),
-    rabbitPort: integer(body, 'rabbitPort', 'Porta do RabbitMQ', 1, 65535, defaults.rabbitPort),
-    rabbitVirtualHost: text(body, 'rabbitVirtualHost', 'Virtual host', { max: 100 }) || '/',
-    rabbitUser: text(body, 'rabbitUser', 'Usuário do RabbitMQ', { required: true, max: 100 }),
-    commandExchange: amqpNameField(body, 'commandExchange', 'Exchange de comandos', defaults.commandExchange),
-    eventExchange: amqpNameField(body, 'eventExchange', 'Exchange de eventos', defaults.eventExchange),
-    driverQueuePrefix: amqpNameField(body, 'driverQueuePrefix', 'Prefixo da fila', defaults.driverQueuePrefix),
-    eventQueue: amqpNameField(body, 'eventQueue', 'Fila de eventos', defaults.eventQueue),
-    prefetch: integer(body, 'prefetch', 'Prefetch', 1, 100, defaults.prefetch),
   };
 }
 
+const secretNames: SecretName[] = ['apiKey'];
+
 async function readData(): Promise<Data> {
-  if (!existsSync(dataFile())) return { settings: defaultSettings(), protectedSecrets: {} };
+  if (!existsSync(dataFile())) return { settings: defaultSettings(), protectedSecrets: {}, folders: {} };
   const saved = JSON.parse(await readFile(dataFile(), 'utf8')) as Partial<Data>;
-  return { settings: { ...defaultSettings(), ...saved.settings }, protectedSecrets: saved.protectedSecrets ?? {} };
+  // Older versions also kept RabbitMQ and WebSocket settings (and the broker password): dropped here.
+  const protectedSecrets: Data['protectedSecrets'] = {};
+  for (const name of secretNames) if (saved.protectedSecrets?.[name]) protectedSecrets[name] = saved.protectedSecrets[name];
+  return {
+    settings: { backendUrl: saved.settings?.backendUrl || defaultSettings().backendUrl },
+    protectedSecrets,
+    folders: saved.folders ?? {},
+  };
 }
 
 async function writeData(data: Data): Promise<void> {
@@ -79,16 +68,16 @@ async function writeData(data: Data): Promise<void> {
 }
 
 // Decrypted once and kept in memory: DPAPI goes through PowerShell (~1 s).
-let cache: { settings: Settings; secrets: Secrets } | null = null;
+let cache: { settings: Settings; secrets: Secrets; folders: Record<string, LocalFolder> } | null = null;
 
-export async function load(): Promise<{ settings: Settings; secrets: Secrets }> {
+export async function load(): Promise<{ settings: Settings; secrets: Secrets; folders: Record<string, LocalFolder> }> {
   if (cache) return cache;
   const data = await readData();
   const names = Object.keys(data.protectedSecrets) as SecretName[];
   const plain = await unprotect(names.map((name) => data.protectedSecrets[name] as string));
-  const secrets: Secrets = { apiKey: '', rabbitPassword: '' };
+  const secrets: Secrets = { apiKey: '' };
   names.forEach((name, index) => (secrets[name] = plain[index]));
-  cache = { settings: data.settings, secrets };
+  cache = { settings: data.settings, secrets, folders: data.folders };
   return cache;
 }
 
@@ -110,7 +99,15 @@ export async function save(settings: Settings, changes: Partial<Secrets>): Promi
   toProtect.forEach((name, index) => (data.protectedSecrets[name] = ciphertexts[index]));
   data.settings = settings;
   await writeData(data);
-  cache = { settings, secrets };
+  cache = { settings, secrets, folders: data.folders };
 }
 
-export const socketUrlOf = (settings: Settings) => settings.socketUrl || `${settings.backendUrl.replace(/^http/, 'ws')}/ws`;
+/** Sets (or, with null, forgets) how this PC feeds a group. */
+export async function saveLocalFolder(groupId: number, folder: LocalFolder | null): Promise<void> {
+  const data = await readData();
+  const current = await load();
+  if (folder) data.folders[String(groupId)] = folder;
+  else delete data.folders[String(groupId)];
+  await writeData(data);
+  cache = { ...current, folders: data.folders };
+}

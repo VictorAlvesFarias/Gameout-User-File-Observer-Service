@@ -9,12 +9,9 @@ interface SettingsViewProps {
   onNotify: (kind: 'ok' | 'error', message: string) => void;
 }
 
-const toInput = (settings: PublicSettings): SettingsInput => {
-  const { effectiveSocketUrl: _socket, hasApiKey: _key, hasRabbitPassword: _password, autoStart: _autoStart, ...rest } = settings;
-  return rest;
-};
+const toInput = (settings: PublicSettings): SettingsInput => ({ backendUrl: settings.backendUrl });
 
-/** Server address and API key, RabbitMQ, and the desktop options. Saving reconnects everything. */
+/** Server address, API key and the desktop options. Saving reconnects. */
 export function SettingsView({ onSaved, onNotify }: SettingsViewProps) {
   const [saved, setSaved] = useState<PublicSettings | null>(null);
   const [draft, setDraft] = useState<SettingsInput | null>(null);
@@ -75,62 +72,7 @@ export function SettingsView({ onSaved, onNotify }: SettingsViewProps) {
             <small className="muted">No My-Personal-Compose: http://localhost:8201. Em desenvolvimento: https://localhost:7000.</small>
           </label>
           <SecretInput label="API key" stored={saved.hasApiKey} value={draft.apiKey} onChange={(value) => set('apiKey', value)} />
-          <label className="field">
-            <span>WebSocket (opcional)</span>
-            <input value={draft.socketUrl} onChange={(e) => set('socketUrl', e.target.value)} placeholder={saved.effectiveSocketUrl} />
-            <small className="muted">Vazio: derivado do endereço da API.</small>
-          </label>
         </div>
-      </section>
-
-      <section className="card settings-section">
-        <h3>
-          <Icon name="download" /> RabbitMQ
-        </h3>
-        <div className="grid-fields">
-          <label className="field">
-            <span>Servidor</span>
-            <input value={draft.rabbitHost} onChange={(e) => set('rabbitHost', e.target.value)} required />
-          </label>
-          <label className="field">
-            <span>Porta</span>
-            <input type="number" min={1} max={65535} value={draft.rabbitPort} onChange={(e) => set('rabbitPort', Number(e.target.value))} />
-          </label>
-          <label className="field">
-            <span>Usuário</span>
-            <input value={draft.rabbitUser} onChange={(e) => set('rabbitUser', e.target.value)} autoComplete="off" required />
-          </label>
-          <SecretInput label="Senha" stored={saved.hasRabbitPassword} value={draft.rabbitPassword} onChange={(value) => set('rabbitPassword', value)} />
-        </div>
-        <details className="advanced">
-          <summary>Avançado (nomes do backend)</summary>
-          <div className="grid-fields">
-            <label className="field">
-              <span>Virtual host</span>
-              <input value={draft.rabbitVirtualHost} onChange={(e) => set('rabbitVirtualHost', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Exchange de comandos</span>
-              <input className="mono" value={draft.commandExchange} onChange={(e) => set('commandExchange', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Prefixo da fila do driver</span>
-              <input className="mono" value={draft.driverQueuePrefix} onChange={(e) => set('driverQueuePrefix', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Exchange de eventos</span>
-              <input className="mono" value={draft.eventExchange} onChange={(e) => set('eventExchange', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Fila de eventos do backend</span>
-              <input className="mono" value={draft.eventQueue} onChange={(e) => set('eventQueue', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Prefetch</span>
-              <input type="number" min={1} max={100} value={draft.prefetch} onChange={(e) => set('prefetch', Number(e.target.value))} />
-            </label>
-          </div>
-        </details>
       </section>
 
       {saved.autoStart !== null && (
@@ -151,7 +93,7 @@ export function SettingsView({ onSaved, onNotify }: SettingsViewProps) {
           <Icon name="save" />
           {saving ? 'Salvando…' : 'Salvar e reconectar'}
         </button>
-        <span className="muted small">A API key e a senha ficam criptografadas para este usuário do Windows (DPAPI).</span>
+        <span className="muted small">A API key fica criptografada para este usuário do Windows (DPAPI).</span>
       </div>
     </form>
   );

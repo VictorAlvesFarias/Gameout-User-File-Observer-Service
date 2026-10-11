@@ -1,47 +1,26 @@
+/* Same palette as the Gameout web app: near-black backgrounds, zinc panels, white accents. */
 :root {
-  --bg: #f5f7fa;
-  --surface: #ffffff;
-  --surface-2: #eff2f6;
-  --border: #e0e4ea;
-  --text: #151820;
-  --muted: #687082;
-  --accent: #7c3aed;
-  --accent-soft: #ede5fd;
-  --accent-text: #ffffff;
-  --ok: #16a34a;
-  --ok-soft: #e1f5e8;
-  --warn: #b26a00;
-  --warn-soft: #fdf0d8;
-  --danger: #d0312d;
-  --danger-soft: #fbe5e4;
-  --log-bg: #0f1218;
-  --log-text: #c3c9d4;
-  --shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 4px 16px rgb(16 24 40 / 0.04);
-  --radius: 14px;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1116;
-    --surface: #161a21;
-    --surface-2: #1e232c;
-    --border: #2a303b;
-    --text: #e7eaf0;
-    --muted: #8c94a4;
-    --accent: #a78bfa;
-    --accent-soft: #2a1d4a;
-    --accent-text: #13082a;
-    --ok: #3fcf7f;
-    --ok-soft: #14301f;
-    --warn: #f0b154;
-    --warn-soft: #3a2c14;
-    --danger: #ff6b66;
-    --danger-soft: #3a1918;
-    --log-bg: #0a0c10;
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
-    color-scheme: dark;
-  }
+  --bg: #050505;
+  --surface: #121212;
+  --surface-2: #18181b;
+  --border: #27272a;
+  --text: #ffffff;
+  --muted: #a1a1aa;
+  --accent: #e4e4e7;
+  --accent-hover: #ffffff;
+  --accent-soft: #27272a;
+  --accent-text: #27272a;
+  --ok: #4ade80;
+  --ok-soft: #14301f;
+  --warn: #facc15;
+  --warn-soft: #3a3010;
+  --danger: #ef4444;
+  --danger-soft: #3a1918;
+  --log-bg: #000000;
+  --log-text: #d4d4d8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.3);
+  --radius: 8px;
+  color-scheme: dark;
 }
 
 * {
@@ -152,7 +131,7 @@ main {
   place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--accent);
   color: var(--accent-text);
 }
@@ -162,7 +141,7 @@ main {
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--surface);
 }
 
@@ -253,7 +232,7 @@ main {
 }
 
 .button.primary:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--accent-hover);
 }
 
 .button.success:hover:not(:disabled) {
@@ -325,7 +304,7 @@ main {
   gap: 10px;
   margin-bottom: 16px;
   padding: 10px 14px;
-  border-radius: 11px;
+  border-radius: 8px;
 }
 
 .banner.warn {
@@ -546,7 +525,7 @@ main {
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-left: 4px solid var(--border);
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .status-block.up {
@@ -617,7 +596,7 @@ main {
   justify-content: center;
   gap: 6px;
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--surface-2);
   text-align: center;
 }
@@ -663,7 +642,7 @@ main {
   height: 44px;
   padding: 0 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--bg);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 16px;
@@ -715,7 +694,7 @@ main {
   gap: 10px;
   padding: 11px 12px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
@@ -783,7 +762,7 @@ main {
   padding: 0;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   list-style: none;
 }
 
@@ -1234,7 +1213,7 @@ input.tiny {
   min-height: 92px;
   justify-content: center;
   padding: 12px;
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--surface-2);
 }
 
@@ -1273,7 +1252,7 @@ input.tiny {
 .toast {
   max-width: 400px;
   padding: 11px 16px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--text);
   color: var(--bg);
   box-shadow: var(--shadow);
@@ -1417,7 +1396,7 @@ input.tiny {
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--surface);
 }
 
@@ -1570,7 +1549,7 @@ select.select {
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--warn-soft);
 }
 
@@ -1608,5 +1587,134 @@ select.select {
 @media (max-width: 900px) {
   .links {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Groups and server logs */
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.subhead {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.connection-card > .action-row {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.server-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.server-logs .search {
+  width: min(320px, 50vw);
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+}
+
+.server-logs .search:focus {
+  border-color: var(--accent);
+}
+
+.server-log-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+
+.server-log-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.server-log-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.server-log-row:disabled {
+  cursor: default;
+}
+
+.server-log-row:hover:not(:disabled),
+.server-log-list li.is-open .server-log-row {
+  background: var(--surface-2);
+}
+
+.server-log-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-log-action {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.server-log-action.ok {
+  color: var(--ok);
+}
+
+.server-log-action.error {
+  color: var(--danger);
+}
+
+.server-log-action.warn {
+  color: var(--warn);
+}
+
+.server-log-action.info {
+  color: var(--muted);
+}
+
+.server-log-details {
+  margin: 0;
+  padding: 10px 14px 14px 102px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+@media (max-width: 700px) {
+  .server-log-row {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .server-log-details {
+    padding-left: 14px;
   }
 }

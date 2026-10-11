@@ -1,7 +1,7 @@
 import { powershell } from './exec.ts';
 
 /**
- * Windows DPAPI (CurrentUser): the API key and the RabbitMQ password are stored encrypted, readable
+ * Windows DPAPI (CurrentUser): the API key is stored encrypted, readable
  * only by this Windows account. Values travel through stdin as base64, never on a command line.
  */
 async function dpapi(action: 'Protect' | 'Unprotect', values: string[]): Promise<string[]> {

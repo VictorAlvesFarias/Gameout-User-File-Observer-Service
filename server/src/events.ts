@@ -1,3 +1,6 @@
+import type { FolderStatus } from './protocol.ts';
+import type { LocalFolder } from './store.ts';
+
 export type LogLevel = 'info' | 'step' | 'ok' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -9,7 +12,7 @@ export interface LogEntry {
 
 export type LinkStatus = 'off' | 'connecting' | 'ok' | 'error';
 
-/** One of the three connections the driver keeps: backend API, RabbitMQ and the presence socket. */
+/** The connection to the backend API. */
 export interface Link {
   status: LinkStatus;
   message: string;
@@ -21,18 +24,24 @@ export interface FolderSync {
   message: string;
 }
 
-/** A folder registered in Gameout (an AppFile) as the driver sees it. */
+/** A Gameout group (an AppFile) and how this PC feeds it. */
 export interface Folder {
   id: number;
   name: string;
-  path: string;
-  /** Changes start a backup. */
-  observer: boolean;
-  /** Changes mark the folder as unsynced. */
-  autoValidateSync: boolean;
+  /** Set on the web: keep every version or only the newest. */
+  versionControl: boolean;
+  /** As the backend has it (the last report of any driver). */
+  status: FolderStatus | null;
+  statusMessage: string | null;
+  /** Latest confirmed version (UTC) and the folder size it had. */
+  lastSyncedAt: string | null;
+  lastSyncedSize: number | null;
+  /** null: this PC doesn't feed the group. */
+  local: LocalFolder | null;
   watching: boolean;
   /** Why the folder is not being watched (missing, locked...). */
   problem: string | null;
+  /** Last backup run on this PC. */
   lastSync: FolderSync | null;
 }
 
@@ -48,12 +57,10 @@ export interface CurrentJob {
 
 export interface DriverState {
   configured: boolean;
-  /** Owner of the API key (the routing key of this driver's command queue). */
-  userId: string | null;
   backend: Link;
-  rabbit: Link;
-  socket: Link;
   folders: Folder[];
+  /** Last time the groups were read from the backend. */
+  checkedAt: string | null;
   /** Folders waiting for a backup, in order. */
   queue: number[];
   current: CurrentJob | null;
@@ -74,11 +81,9 @@ const off = (): Link => ({ status: 'off', message: '' });
 
 export const state: DriverState = {
   configured: false,
-  userId: null,
   backend: off(),
-  rabbit: off(),
-  socket: off(),
   folders: [],
+  checkedAt: null,
   queue: [],
   current: null,
 };
@@ -103,9 +108,9 @@ export function updateState(patch: Partial<DriverState>): void {
   for (const listener of listeners) listener('state', state);
 }
 
-export function setLink(name: 'backend' | 'rabbit' | 'socket', status: LinkStatus, message = ''): void {
-  if (state[name].status === status && state[name].message === message) return;
-  updateState({ [name]: { status, message } });
+export function setLink(status: LinkStatus, message = ''): void {
+  if (state.backend.status === status && state.backend.message === message) return;
+  updateState({ backend: { status, message } });
 }
 
 /** Toast in every open window (and a balloon from the tray icon in the desktop app). */

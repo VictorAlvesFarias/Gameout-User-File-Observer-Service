@@ -1,13 +1,4 @@
-import { logActions, logTypes } from './protocol.ts';
-
-/** AppFile as GET /get-files returns it. */
-export interface RemoteFolder {
-  id: number;
-  name: string;
-  path: string;
-  observer: boolean;
-  autoValidateSync: boolean;
-}
+import { folderStatuses, logActions, logTypes, type FolderStatus, type Page, type RemoteGroup, type ServerLog } from './protocol.ts';
 
 interface BaseResponse<T> {
   success: boolean;
@@ -25,7 +16,8 @@ export class BackendError extends Error {
 
 /**
  * Gameout API, authenticated as the driver (X-API-Key). X-Trace-Application-Id ties the backend's
- * log lines of one operation together.
+ * log lines of one operation together. Every call also tells the backend the driver is alive (the
+ * web shows the last one).
  */
 export class Backend {
   private readonly baseUrl: string;
@@ -62,25 +54,44 @@ export class Backend {
     return payload.data;
   }
 
-  /** Id of the user that owns the API key: the routing key of this driver's command queue. */
-  identity(): Promise<string> {
-    return this.request<string>('GET', '/driver-identity');
+  groups(traceId = ''): Promise<RemoteGroup[]> {
+    return this.request<RemoteGroup[]>('GET', '/get-files', { traceId });
   }
 
-  folders(traceId = ''): Promise<RemoteFolder[]> {
-    return this.request<RemoteFolder[]>('GET', '/get-files', { traceId });
+  createGroup(name: string, traceId = ''): Promise<RemoteGroup> {
+    return this.request<RemoteGroup>('POST', '/upload-file', { body: { name }, traceId });
   }
 
   async newTraceId(): Promise<string> {
     return String(await this.request<number>('GET', '/get-trace-id'));
   }
 
-  /** Registers the backup and returns the presigned MinIO URL to PUT the zip to. */
+  /** Registers the upload and returns the presigned MinIO url to PUT the zip to. */
   createStoredFile(appFileId: number, originalFileSize: number, traceId: string) {
     return this.request<{ appStoredFileId: number; uploadUrl: string }>('POST', '/create-app-stored-file', {
       body: { appFileId, originalFileSize },
       traceId,
     });
+  }
+
+  /** The zip is in MinIO: it becomes a version (and, without version control, replaces the old one). */
+  completeStoredFile(appStoredFileId: number, traceId: string): Promise<void> {
+    return this.request('POST', '/complete-app-stored-file', { body: { appStoredFileId }, traceId });
+  }
+
+  /** The upload failed: the record created for it is dropped. */
+  cancelStoredFile(appStoredFileId: number, message: string, traceId: string): Promise<void> {
+    return this.request('POST', '/cancel-app-stored-file', { body: { appStoredFileId, message }, traceId });
+  }
+
+  /** What the driver found in the folder, shown on the web. */
+  setStatus(appFileId: number, status: FolderStatus, message: string | null, traceId = ''): Promise<void> {
+    return this.request('PUT', '/update-appfile-status', { body: { appFileId, status: folderStatuses[status], message }, traceId });
+  }
+
+  logs(page: number, pageSize: number, search: string): Promise<Page<ServerLog>> {
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize), searchInput: search });
+    return this.request<Page<ServerLog>>('GET', `/api/application-log/traces?${query}`);
   }
 
   /** Mirrors a line to the backend's application log. Never throws: logging must not break a backup. */

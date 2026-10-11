@@ -1,4 +1,4 @@
-import type { PublicSettings, SettingsInput } from './types';
+import type { FolderStatus, LocalFolder, Page, PublicSettings, ServerLog, SettingsInput } from './types';
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -24,4 +24,11 @@ export const api = {
   refreshFolders: () => request<Ok>('POST', '/folders/refresh'),
   syncFolder: (id: number) => request<Ok>('POST', `/folders/${id}/sync`),
   syncAll: () => request<{ queued: number }>('POST', '/folders/sync-all'),
+  checkFolder: (id: number) => request<{ status: FolderStatus }>('POST', `/folders/${id}/check`),
+  createGroup: (name: string, local: LocalFolder) => request<Ok>('POST', '/groups', { name, ...local }),
+  setLocal: (id: number, local: LocalFolder) => request<Ok>('PUT', `/folders/${id}/local`, local),
+  removeLocal: (id: number) => request<Ok>('DELETE', `/folders/${id}/local`),
+  pickFolder: () => request<{ path: string | null }>('POST', '/dialog/folder'),
+  serverLogs: (page: number, pageSize: number, search: string) =>
+    request<Page<ServerLog>>('GET', `/server-logs?${new URLSearchParams({ page: String(page), pageSize: String(pageSize), search })}`),
 };

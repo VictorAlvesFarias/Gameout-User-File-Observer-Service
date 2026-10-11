@@ -3,11 +3,11 @@ import type { AddressInfo } from 'node:net';
 import tls from 'node:tls';
 import express, { type ErrorRequestHandler, type Request } from 'express';
 import { desktop } from './desktop.ts';
-import { enqueue, refreshFolders, restartDriver, startDriver, syncNow } from './driver.ts';
+import { checkStatus, createGroup, refreshFolders, restartDriver, serverLogs, setLocalFolder, startDriver, syncAll, syncNow } from './driver.ts';
 import { recentLog, say, state, subscribe } from './events.ts';
 import { paths } from './paths.ts';
-import { load, parseSettings, save, socketUrlOf } from './store.ts';
-import { badRequest, HttpError, optionalSecret, type Body } from './validation.ts';
+import { load, parseSettings, save, type LocalFolder } from './store.ts';
+import { badRequest, bool, folderPath, HttpError, integer, optionalSecret, text, type Body } from './validation.ts';
 
 // The API starts backups and stores the server credentials, so only same-machine requests are
 // accepted (blocks DNS rebinding), and every state-changing request must carry a custom header
@@ -38,18 +38,24 @@ async function publicSettings() {
   const { settings, secrets } = await load();
   return {
     ...settings,
-    effectiveSocketUrl: socketUrlOf(settings),
     hasApiKey: Boolean(secrets.apiKey),
-    hasRabbitPassword: Boolean(secrets.rabbitPassword),
     autoStart: desktop.autoStart ? desktop.autoStart.get() : null,
+    canPickFolder: desktop.pickFolder !== null,
   };
 }
 
 const folderId = (req: Request) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) throw badRequest('Pasta inválida');
+  if (!Number.isInteger(id) || id <= 0) throw badRequest('Grupo inválido');
   return id;
 };
+
+/** How this PC feeds a group, as the window sends it. */
+const localFolder = (input: Body): LocalFolder => ({
+  path: folderPath(input, 'path', 'Pasta'),
+  observer: bool(input, 'observer', 'Enviar quando mudar'),
+  autoValidateSync: bool(input, 'autoValidateSync', 'Validar quando mudar'),
+});
 
 export function createApp() {
   const app = express();
@@ -86,10 +92,7 @@ export function createApp() {
   // Saving reconnects everything with the new values.
   app.put('/api/settings', async (req, res) => {
     const settings = parseSettings(body(req));
-    await save(settings, {
-      apiKey: optionalSecret(body(req).apiKey, 'API key'),
-      rabbitPassword: optionalSecret(body(req).rabbitPassword, 'Senha do RabbitMQ'),
-    });
+    await save(settings, { apiKey: optionalSecret(body(req).apiKey, 'API key') });
     say('==> Configurações salvas, reconectando');
     void restartDriver();
     res.json(await publicSettings());
@@ -111,16 +114,49 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  app.post('/api/folders/:id/sync', async (req, res) => {
-    await syncNow(folderId(req));
+  app.post('/api/folders/:id/sync', (req, res) => {
+    syncNow(folderId(req));
     res.json({ ok: true });
   });
 
-  // Every watched folder, one after the other.
+  app.post('/api/folders/:id/check', async (req, res) => {
+    res.json({ status: await checkStatus(folderId(req)) });
+  });
+
+  // Every group with a folder on this PC, one after the other.
   app.post('/api/folders/sync-all', (_req, res) => {
-    const folders = state.folders.filter((folder) => folder.watching);
-    for (const folder of folders) enqueue(folder.id, folder.path, '');
-    res.json({ queued: folders.length });
+    res.json({ queued: syncAll() });
+  });
+
+  // A new group, fed by a folder of this PC.
+  app.post('/api/groups', async (req, res) => {
+    const name = text(body(req), 'name', 'Nome', { required: true, max: 120 });
+    await createGroup(name, localFolder(body(req)));
+    res.status(201).json({ ok: true });
+  });
+
+  app.put('/api/folders/:id/local', async (req, res) => {
+    await setLocalFolder(folderId(req), localFolder(body(req)));
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/folders/:id/local', async (req, res) => {
+    await setLocalFolder(folderId(req), null);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/dialog/folder', async (_req, res) => {
+    if (!desktop.pickFolder) throw new HttpError(409, 'Disponível só no aplicativo instalado');
+    res.json({ path: await desktop.pickFolder('Escolha a pasta dos saves') });
+  });
+
+  // The backend's application log, a page at a time.
+  app.get('/api/server-logs', async (req, res) => {
+    const query = req.query as Record<string, unknown>;
+    const page = integer(query, 'page', 'Página', 1, 100_000, 1);
+    const pageSize = integer(query, 'pageSize', 'Tamanho da página', 1, 200, 50);
+    const search = text(query, 'search', 'Busca', { max: 200 });
+    res.json(await serverLogs(page, pageSize, search));
   });
 
   app.use('/api', (_req, res) => {

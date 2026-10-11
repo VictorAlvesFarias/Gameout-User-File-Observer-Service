@@ -6,7 +6,7 @@ import { join, relative, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import yazl from 'yazl';
-import type { FolderStatus, StatusCheckPayload } from './protocol.ts';
+import type { FolderStatus } from './protocol.ts';
 
 export interface ScannedFile {
   path: string;
@@ -142,15 +142,21 @@ export async function uploadFile(url: string, file: string, onProgress: (bytesSe
   });
 }
 
+export interface LastSync {
+  /** When the latest version was registered (ISO, UTC). */
+  lastSyncedAt: string | null;
+  /** Folder size (before zipping) in that version. */
+  lastSyncedSize: number | null;
+}
+
 /**
- * Compares the folder with the last synced backup, like the .NET driver did: a different total size,
- * or any file changed after the backup, means it is out of sync. Dates without a zone are local time
- * on both sides.
+ * Compares the folder with the latest version, like the .NET driver did: a different total size, or
+ * any file changed after the version, means it is out of sync.
  */
-export function compareWithLastSync(scan: FolderScan, payload: StatusCheckPayload): FolderStatus {
-  if (payload.lastSyncedFileSize === null || payload.lastSyncedFileDate === null) return 'Unsynced';
-  if (payload.lastSyncedFileSize !== scan.totalSize) return 'Unsynced';
-  const syncedAt = Date.parse(payload.lastSyncedFileDate);
+export function compareWithLastSync(scan: FolderScan, last: LastSync): FolderStatus {
+  if (last.lastSyncedSize === null || last.lastSyncedAt === null) return 'Unsynced';
+  if (last.lastSyncedSize !== scan.totalSize) return 'Unsynced';
+  const syncedAt = Date.parse(last.lastSyncedAt);
   if (Number.isNaN(syncedAt)) return 'Unsynced';
   return scan.newest !== null && scan.newest > syncedAt ? 'Unsynced' : 'Synced';
 }

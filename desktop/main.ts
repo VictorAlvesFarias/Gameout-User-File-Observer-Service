@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog, Menu, nativeImage, Notification, session, shell, Tray } from 'electron';
 import { startServer } from '../server/src/app.ts';
 import { configureDesktop } from '../server/src/desktop.ts';
-import { enqueue, isBusy, stopDriver } from '../server/src/driver.ts';
+import { isBusy, stopDriver, syncAll } from '../server/src/driver.ts';
 import { state, subscribe, type Notice } from '../server/src/events.ts';
 import { configurePaths } from '../server/src/paths.ts';
 
@@ -19,6 +19,11 @@ configureDesktop({
   autoStart: {
     get: () => app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin,
     set: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] }),
+  },
+  pickFolder: async (title) => {
+    const options = { title, properties: ['openDirectory' as const] };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
   },
 });
 
@@ -45,7 +50,7 @@ function createWindow() {
     minHeight: 560,
     title: 'Gameout Driver',
     icon: iconPath,
-    backgroundColor: '#0f1115',
+    backgroundColor: '#09090b',
     autoHideMenuBar: true,
     show: false,
     webPreferences: { contextIsolation: true, sandbox: true },
@@ -102,7 +107,7 @@ function trayMenu() {
     {
       label: 'Sincronizar todas as pastas',
       enabled: state.backend.status === 'ok',
-      click: () => state.folders.filter((folder) => folder.watching).forEach((folder) => enqueue(folder.id, folder.path, '')),
+      click: () => syncAll(),
     },
     { type: 'separator' },
     {
@@ -120,7 +125,7 @@ function trayTooltip() {
   if (!state.configured) return 'Gameout Driver: não configurado';
   if (state.current) return `Gameout Driver: enviando ${state.current.name}`;
   if (state.backend.status !== 'ok') return 'Gameout Driver: sem conexão com o servidor';
-  return `Gameout Driver: ${state.folders.filter((folder) => folder.watching).length} pasta(s) observada(s)`;
+  return `Gameout Driver: ${state.folders.filter((folder) => folder.local).length} pasta(s) neste PC`;
 }
 
 function createTray() {

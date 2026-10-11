@@ -6,46 +6,49 @@ import { join } from 'node:path';
 import { Backend } from './backend.ts';
 import { compareWithLastSync, isAccessible, scanFolder, uploadFile, zipFolder } from './backup.ts';
 import { notify, say, setLink, state, updateState, type CurrentJob, type Folder } from './events.ts';
-import { PresenceLink } from './presence.ts';
-import { commandTypes, parseStatusCheck, type DriverCommand, type DriverEvent, type FolderStatus, type StatusCheckPayload } from './protocol.ts';
-import { RabbitLink } from './rabbit.ts';
-import { load, socketUrlOf } from './store.ts';
+import { statusName, type FolderStatus, type Page, type RemoteGroup, type ServerLog } from './protocol.ts';
+import { load, saveLocalFolder, type LocalFolder } from './store.ts';
 import { FolderWatchers } from './watchers.ts';
 
-const identityRetryDelay = 15_000;
-
-interface QueueItem {
-  appFileId: number;
-  path: string;
-  traceId: string;
-}
+/** How often the groups are read again: picks up changes made on the web and tells it the driver is alive. */
+const pollInterval = 60_000;
+const retryDelay = 15_000;
 
 let backend: Backend | null = null;
-let rabbit: RabbitLink | null = null;
-let presence: PresenceLink | null = null;
-let retryTimer: NodeJS.Timeout | null = null;
+let backendUrl = '';
+let pollTimer: NodeJS.Timeout | null = null;
 /** Bumped on every (re)start, so results of an older run are ignored. */
 let generation = 0;
-const pending = new Map<number, QueueItem>();
+const pending = new Map<number, string>();
 let processing = false;
+/** Path each watcher was started with, to restart it only when the folder changes. */
+const watchedPaths = new Map<number, string>();
 
 const watchers = new FolderWatchers(
   (folderId) => void folderChanged(folderId),
   (folderId, error) => {
+    watchedPaths.delete(folderId);
     patchFolder(folderId, { watching: false, problem: `Observação interrompida: ${error.message}` });
-    say(`[!] Pasta ${folderName(folderId)}: observação interrompida (${error.message})`, 'warn');
+    say(`[!] ${folderName(folderId)}: observação interrompida (${error.message})`, 'warn');
   },
 );
 
 const folderName = (id: number) => state.folders.find((folder) => folder.id === id)?.name ?? `#${id}`;
+const findFolder = (id: number) => state.folders.find((folder) => folder.id === id);
 
 function patchFolder(id: number, patch: Partial<Folder>): void {
   updateState({ folders: state.folders.map((folder) => (folder.id === id ? { ...folder, ...patch } : folder)) });
 }
 
+/** Reports what was found in a folder; a failure only goes to the local log. */
+function sendStatus(appFileId: number, status: FolderStatus, message: string | null, traceId = ''): void {
+  patchFolder(appFileId, { status, statusMessage: message });
+  backend?.setStatus(appFileId, status, message, traceId).catch((error: Error) => say(`[!] Status de ${folderName(appFileId)} não enviado: ${error.message}`, 'warn'));
+}
+
 // ------------------------------------------------------------------ lifecycle
 
-/** Connects everything with the saved settings. Without an API key it waits to be configured. */
+/** Connects with the saved settings. Without an API key it waits to be configured. */
 export async function startDriver(): Promise<void> {
   const run = ++generation;
   const { settings, secrets } = await load();
@@ -53,47 +56,45 @@ export async function startDriver(): Promise<void> {
   updateState({ configured });
 
   if (!configured) {
-    setLink('backend', 'off', 'Informe o endereço do servidor e a API key nas Configurações.');
+    setLink('off', 'Informe o endereço do servidor e a API key nas Configurações.');
     return;
   }
 
   backend = new Backend(settings.backendUrl, secrets.apiKey);
-  setLink('backend', 'connecting', settings.backendUrl);
+  backendUrl = settings.backendUrl;
+  setLink('connecting', backendUrl);
 
-  let userId: string;
-  try {
-    userId = await backend.identity();
-  } catch (error) {
+  if (!(await refreshFolders())) {
     if (run !== generation) return;
-    setLink('backend', 'error', (error as Error).message);
-    retryTimer = setTimeout(() => void startDriver(), identityRetryDelay);
+    pollTimer = setTimeout(() => void startDriver(), retryDelay);
     return;
   }
   if (run !== generation) return;
 
-  updateState({ userId });
-  setLink('backend', 'ok', settings.backendUrl);
-  say(`[OK] Conectado a ${settings.backendUrl}`, 'ok');
+  say(`[OK] Conectado a ${backendUrl}`, 'ok');
+  // Changes made while the driver was closed: compare every folder that asks for it.
+  for (const folder of state.folders) {
+    if (folder.local?.autoValidateSync && folder.watching) void checkStatus(folder.id);
+  }
+  schedulePoll(run);
+}
 
-  rabbit = new RabbitLink({ settings, password: secrets.rabbitPassword, userId, onCommand: handleCommand });
-  rabbit.start();
-  presence = new PresenceLink(socketUrlOf(settings), secrets.apiKey);
-  presence.start();
-  await refreshFolders();
+function schedulePoll(run: number): void {
+  pollTimer = setTimeout(async () => {
+    if (run !== generation) return;
+    await refreshFolders();
+    if (run === generation) schedulePoll(run);
+  }, pollInterval);
 }
 
 export async function stopDriver(): Promise<void> {
   generation++;
-  if (retryTimer) clearTimeout(retryTimer);
-  retryTimer = null;
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
   watchers.closeAll();
-  presence?.stop();
-  await rabbit?.stop();
-  presence = null;
-  rabbit = null;
+  watchedPaths.clear();
   backend = null;
-  setLink('backend', 'off');
-  updateState({ userId: null });
+  setLink('off');
 }
 
 export async function restartDriver(): Promise<void> {
@@ -103,149 +104,195 @@ export async function restartDriver(): Promise<void> {
 
 export const isBusy = () => processing;
 
-// ------------------------------------------------------------------ folders
+// ------------------------------------------------------------------ groups and folders
 
-/** Reloads the folders from the backend and watches those that ask for it. */
-export async function refreshFolders(traceId = ''): Promise<void> {
-  if (!backend) return;
+/** Joins a group from the backend with this PC's settings for it. */
+export function toFolder(group: RemoteGroup, local: LocalFolder | null, previous?: Folder): Folder {
+  return {
+    id: group.id,
+    name: group.name,
+    versionControl: group.versionControl,
+    status: statusName(group.status),
+    statusMessage: group.statusMessage,
+    lastSyncedAt: group.lastSyncedAt,
+    lastSyncedSize: group.lastSyncedSize,
+    local,
+    watching: previous?.watching ?? false,
+    problem: previous?.problem ?? null,
+    lastSync: previous?.lastSync ?? null,
+  };
+}
+
+/** Why a folder can't be used right now, or null. */
+async function folderProblem(path: string): Promise<{ status: FolderStatus; message: string } | null> {
+  if (!existsSync(path)) return { status: 'PathNotFounded', message: 'Pasta não encontrada neste PC' };
+  if (!(await isAccessible(path))) return { status: 'LockedFiles', message: 'Arquivos em uso por outro programa' };
+  return null;
+}
+
+/**
+ * Reads the groups from the backend, joins them with the local settings and (re)starts the watchers
+ * that changed. Returns whether the backend answered.
+ */
+export async function refreshFolders(traceId = ''): Promise<boolean> {
+  if (!backend) return false;
   const run = generation;
-  let remote;
+  let groups: RemoteGroup[];
   try {
-    remote = await backend.folders(traceId);
+    groups = await backend.groups(traceId);
   } catch (error) {
-    say(`[X] Não foi possível buscar as pastas: ${(error as Error).message}`, 'error');
-    return;
+    if (run !== generation) return false;
+    setLink('error', (error as Error).message);
+    return false;
   }
-  if (run !== generation) return;
+  if (run !== generation) return false;
+  setLink('ok', backendUrl);
 
-  watchers.closeAll();
+  const { folders: localFolders } = await load();
   const previous = new Map(state.folders.map((folder) => [folder.id, folder]));
-  const folders: Folder[] = [];
+  const folders = groups.map((group) => toFolder(group, localFolders[String(group.id)] ?? null, previous.get(group.id)));
 
-  for (const item of remote) {
-    const folder: Folder = {
-      id: item.id,
-      name: item.name,
-      path: item.path,
-      observer: item.observer,
-      autoValidateSync: item.autoValidateSync,
-      watching: false,
-      problem: null,
-      lastSync: previous.get(item.id)?.lastSync ?? null,
-    };
+  // Groups deleted on the web: forget their folder on this PC.
+  for (const id of Object.keys(localFolders)) {
+    if (!groups.some((group) => String(group.id) === id)) {
+      await saveLocalFolder(Number(id), null);
+      say(`Grupo #${id} foi excluído no site; a pasta deixou de ser enviada`);
+    }
+  }
 
-    if (folder.observer || folder.autoValidateSync) {
-      if (!existsSync(folder.path)) {
-        folder.problem = 'Pasta não encontrada neste PC';
-        backend.log('Path not found during watcher setup', `AppFileId: ${folder.id}, Path: ${folder.path}`, traceId, { action: 'error' });
-      } else if (!(await isAccessible(folder.path))) {
-        folder.problem = 'Arquivos em uso por outro programa';
-        backend.log('Directory not accessible (locked files) during watcher setup', `AppFileId: ${folder.id}, Path: ${folder.path}`, traceId, { action: 'error' });
-      } else {
+  const recovered: number[] = [];
+  for (const folder of folders) {
+    const local = folder.local;
+    const wanted = local && (local.observer || local.autoValidateSync) ? local.path : null;
+    const before = previous.get(folder.id)?.problem ?? null;
+
+    if (!local) {
+      folder.problem = null;
+    } else {
+      const problem = await folderProblem(local.path);
+      folder.problem = problem?.message ?? null;
+      // Reported once, when it appears, not on every poll.
+      if (problem && problem.message !== before) sendStatus(folder.id, problem.status, problem.message, traceId);
+      if (!problem && before && local.autoValidateSync) recovered.push(folder.id);
+    }
+
+    if (wanted && !folder.problem) {
+      if (watchedPaths.get(folder.id) !== wanted) {
+        watchers.unwatch(folder.id);
         try {
-          watchers.watch(folder.id, folder.path);
-          folder.watching = true;
+          watchers.watch(folder.id, wanted);
+          watchedPaths.set(folder.id, wanted);
         } catch (error) {
+          watchedPaths.delete(folder.id);
           folder.problem = (error as Error).message;
         }
       }
+    } else if (watchedPaths.has(folder.id)) {
+      watchers.unwatch(folder.id);
+      watchedPaths.delete(folder.id);
     }
-    folders.push(folder);
+    folder.watching = watchedPaths.has(folder.id);
   }
 
-  updateState({ folders });
-  say(`[OK] ${folders.filter((folder) => folder.watching).length} de ${folders.length} pasta(s) observada(s)`, 'ok');
+  for (const id of [...watchedPaths.keys()]) {
+    if (!folders.some((folder) => folder.id === id)) {
+      watchers.unwatch(id);
+      watchedPaths.delete(id);
+    }
+  }
+
+  updateState({ folders, checkedAt: new Date().toISOString() });
+  // The folder is back (or the game released its files): its real state is known again.
+  for (const id of recovered) void checkStatus(id).catch(() => undefined);
+  return true;
+}
+
+/** Creates a group on the backend fed by a folder of this PC. */
+export async function createGroup(name: string, local: LocalFolder): Promise<void> {
+  if (!backend) throw new Error('Servidor desconectado');
+  const group = await backend.createGroup(name);
+  await saveLocalFolder(group.id, local);
+  say(`[OK] Grupo ${group.name} criado`, 'ok');
+  await refreshFolders();
+  if (local.observer) enqueue(group.id);
+}
+
+/** Sets (or, with null, forgets) the folder of this PC that feeds a group. */
+export async function setLocalFolder(groupId: number, local: LocalFolder | null): Promise<void> {
+  if (!findFolder(groupId)) throw new Error('Grupo não encontrado');
+  await saveLocalFolder(groupId, local);
+  say(local ? `Pasta de ${folderName(groupId)}: ${local.path}` : `${folderName(groupId)} deixou de ser enviado por este PC`);
+  await refreshFolders();
+  if (local?.autoValidateSync) await checkStatus(groupId);
 }
 
 async function folderChanged(folderId: number): Promise<void> {
-  const folder = state.folders.find((item) => item.id === folderId);
-  if (!folder || !backend) return;
-  const traceId = await backend.newTraceId().catch(() => '');
+  const folder = findFolder(folderId);
+  if (!folder?.local || !backend) return;
 
-  if (!existsSync(folder.path)) {
+  const problem = await folderProblem(folder.local.path);
+  if (problem?.status === 'PathNotFounded') {
     watchers.unwatch(folder.id);
-    patchFolder(folder.id, { watching: false, problem: 'Pasta não encontrada neste PC' });
-    sendStatus(folder.id, 'PathNotFounded', traceId);
+    watchedPaths.delete(folder.id);
+    patchFolder(folder.id, { watching: false, problem: problem.message });
+    sendStatus(folder.id, problem.status, problem.message);
     return;
   }
 
-  say(`Pasta ${folder.name} alterada`);
-  if (folder.autoValidateSync) sendStatus(folder.id, 'Unsynced', traceId);
-  if (folder.observer) enqueue(folder.id, folder.path, traceId);
+  say(`${folder.name}: pasta alterada`);
+  if (folder.local.autoValidateSync) sendStatus(folder.id, 'Unsynced', 'Alterada desde o último envio');
+  if (folder.local.observer) enqueue(folder.id);
 }
 
-// ------------------------------------------------------------------ commands
+/** Compares the folder with the latest version in the backend and reports the result. */
+export async function checkStatus(appFileId: number): Promise<FolderStatus> {
+  const folder = findFolder(appFileId);
+  if (!folder?.local) throw new Error('Este grupo não tem pasta neste PC');
+  if (pending.has(appFileId) || state.current?.appFileId === appFileId) return 'Processing';
 
-async function handleCommand(command: DriverCommand): Promise<void> {
-  say(`==> Comando ${command.command} (pasta ${folderName(command.appFileId)})`);
-  switch (command.command.toLowerCase()) {
-    case commandTypes.refreshWatchers.toLowerCase():
-      await refreshFolders(command.traceId);
-      break;
-    case commandTypes.startBackup.toLowerCase():
-      enqueue(command.appFileId, command.path, command.traceId);
-      break;
-    case commandTypes.scanDirectories.toLowerCase():
-      await checkStatus(parseStatusCheck(command.payloadJson, { appFileId: command.appFileId, path: command.path }), command.traceId);
-      break;
-    case commandTypes.heartbeat.toLowerCase():
-      break;
-    default:
-      say(`[!] Comando ${command.command} não é suportado por este driver`, 'warn');
+  const problem = await folderProblem(folder.local.path);
+  if (problem) {
+    sendStatus(appFileId, problem.status, problem.message);
+    return problem.status;
   }
-}
 
-function event(fields: Omit<DriverEvent, 'userId' | 'createdAtUtc'>): void {
-  rabbit?.publish({ ...fields, userId: state.userId ?? '', createdAtUtc: new Date().toISOString() });
-}
-
-/** The backend reads the AppFile status from the Status field of a Progress event. */
-function sendStatus(appFileId: number, status: FolderStatus, traceId: string): void {
-  event({ event: 'Progress', appFileId, traceId, message: status, status });
-}
-
-/** Answers a status check: compares the folder with its last synced backup. */
-async function checkStatus(payload: StatusCheckPayload, traceId: string): Promise<void> {
-  const { appFileId, path } = payload;
-  if (pending.has(appFileId) || state.current?.appFileId === appFileId) {
-    sendStatus(appFileId, 'Processing', traceId);
-    return;
-  }
-  if (!existsSync(path)) {
-    backend?.log('Path not found during status check', `AppFileId: ${appFileId}, Path: ${path}`, traceId, { action: 'error' });
-    sendStatus(appFileId, 'PathNotFounded', traceId);
-    return;
-  }
   try {
-    const status = compareWithLastSync(await scanFolder(path), payload);
-    say(`Status de ${folderName(appFileId)}: ${status === 'Synced' ? 'sincronizada' : 'desatualizada'}`);
-    sendStatus(appFileId, status, traceId);
+    const status = compareWithLastSync(await scanFolder(folder.local.path), folder);
+    say(`${folder.name}: ${status === 'Synced' ? 'sincronizado' : 'diferente da última versão'}`);
+    sendStatus(appFileId, status, status === 'Synced' ? null : 'Diferente da última versão');
+    return status;
   } catch (error) {
-    backend?.log('Exception while calculating folder statistics', `AppFileId: ${appFileId}, Path: ${path}, Message: ${(error as Error).message}`, traceId, {
-      action: 'warning',
-      exception: true,
-    });
-    sendStatus(appFileId, 'Unsynced', traceId);
+    say(`[!] ${folder.name}: não foi possível comparar (${(error as Error).message})`, 'warn');
+    sendStatus(appFileId, 'Unsynced', (error as Error).message);
+    return 'Unsynced';
   }
+}
+
+export function serverLogs(page: number, pageSize: number, search: string): Promise<Page<ServerLog>> {
+  if (!backend) throw new Error('Servidor desconectado');
+  return backend.logs(page, pageSize, search);
 }
 
 // ------------------------------------------------------------------ backups
 
-/** Queues a backup; a folder already waiting is not queued twice. */
-export function enqueue(appFileId: number, path: string, traceId: string): void {
-  if (pending.has(appFileId)) return;
-  const folderPath = path || state.folders.find((folder) => folder.id === appFileId)?.path || '';
-  pending.set(appFileId, { appFileId, path: folderPath, traceId });
+/** Queues a backup of a group that has a folder on this PC; one already waiting is not queued twice. */
+export function enqueue(appFileId: number, traceId = ''): void {
+  if (pending.has(appFileId) || !findFolder(appFileId)?.local) return;
+  pending.set(appFileId, traceId);
   updateState({ queue: [...pending.keys()] });
   void processQueue();
 }
 
-/** Backup requested from the window. */
-export async function syncNow(appFileId: number): Promise<void> {
-  const folder = state.folders.find((item) => item.id === appFileId);
-  if (!folder) throw new Error('Pasta não encontrada');
-  const traceId = (await backend?.newTraceId().catch(() => '')) ?? '';
-  enqueue(folder.id, folder.path, traceId);
+export function syncNow(appFileId: number): void {
+  if (!findFolder(appFileId)?.local) throw new Error('Este grupo não tem pasta neste PC');
+  enqueue(appFileId);
+}
+
+/** Every group with a folder on this PC, one after the other. */
+export function syncAll(): number {
+  const folders = state.folders.filter((folder) => folder.local && !folder.problem);
+  for (const folder of folders) enqueue(folder.id);
+  return folders.length;
 }
 
 async function processQueue(): Promise<void> {
@@ -253,10 +300,10 @@ async function processQueue(): Promise<void> {
   processing = true;
   try {
     while (pending.size > 0) {
-      const [item] = pending.values();
-      pending.delete(item.appFileId);
+      const [[appFileId, traceId]] = pending.entries();
+      pending.delete(appFileId);
       updateState({ queue: [...pending.keys()] });
-      await runBackup(item);
+      await runBackup(appFileId, traceId);
     }
   } finally {
     processing = false;
@@ -275,39 +322,34 @@ function progress(patch: Partial<CurrentJob>, force = false): void {
   updateState({ current });
 }
 
-async function runBackup({ appFileId, path, traceId: givenTraceId }: QueueItem): Promise<void> {
-  const name = folderName(appFileId);
+/** Zips the folder, sends it straight to MinIO and confirms it (or cancels the upload when it fails). */
+async function runBackup(appFileId: number, givenTraceId: string): Promise<void> {
+  const folder = findFolder(appFileId);
+  const path = folder?.local?.path;
+  if (!folder || !path) return;
+  const name = folder.name;
   const traceId = givenTraceId || ((await backend?.newTraceId().catch(() => '')) ?? '');
   const zip = join(tmpdir(), `gameout-${randomUUID()}.zip`);
   const finish = (ok: boolean, message: string) => patchFolder(appFileId, { lastSync: { at: new Date().toISOString(), ok, message } });
   let appStoredFileId: number | null = null;
-  let originalFileSize: number | null = null;
 
   say(`==> Backup de ${name}`);
   updateState({ current: { appFileId, name, phase: 'scan', bytes: 0, total: null, startedAt: new Date().toISOString() } });
 
   try {
     if (!backend) throw new Error('Servidor desconectado');
-    if (!existsSync(path)) {
-      backend.log('Path not found during processing', `AppFileId: ${appFileId}, Path: ${path}`, traceId, { action: 'error' });
-      sendStatus(appFileId, 'PathNotFounded', traceId);
-      finish(false, 'Pasta não encontrada');
-      say(`[X] ${name}: pasta não encontrada (${path})`, 'error');
-      return;
-    }
-    if (!(await isAccessible(path))) {
-      backend.log('Locked files detected during processing', `AppFileId: ${appFileId}, Path: ${path}`, traceId, { action: 'error' });
-      sendStatus(appFileId, 'LockedFiles', traceId);
-      finish(false, 'Arquivos em uso por outro programa');
-      say(`[X] ${name}: arquivos em uso por outro programa`, 'error');
+    const problem = await folderProblem(path);
+    if (problem) {
+      backend.log(`${problem.status} during processing`, `AppFileId: ${appFileId}, Path: ${path}`, traceId, { action: 'error' });
+      sendStatus(appFileId, problem.status, problem.message, traceId);
+      finish(false, problem.message);
+      say(`[X] ${name}: ${problem.message.toLowerCase()} (${path})`, 'error');
       return;
     }
 
     const scan = await scanFolder(path);
-    originalFileSize = scan.totalSize;
     if (scan.files.length === 0) {
       backend.log('No files found in directory during processing', `AppFileId: ${appFileId}, Path: ${path}`, traceId, { action: 'warning' });
-      sendStatus(appFileId, 'Synced', traceId);
       finish(true, 'Pasta vazia');
       say(`[!] ${name}: pasta vazia, nada a enviar`, 'warn');
       return;
@@ -319,37 +361,32 @@ async function runBackup({ appFileId, path, traceId: givenTraceId }: QueueItem):
 
     const created = await backend.createStoredFile(appFileId, scan.totalSize, traceId);
     appStoredFileId = created.appStoredFileId;
-    event({ event: 'Started', appFileId, appStoredFileId, traceId, message: 'Backup upload started', originalFileSize });
-    event({ event: 'Progress', appFileId, appStoredFileId, traceId, message: 'Uploading ZIP directly to MinIO', progress: 5, originalFileSize });
+    patchFolder(appFileId, { status: 'Processing', statusMessage: null });
 
     progress({ phase: 'upload', bytes: 0, total: zipSize }, true);
-    let reported = 5;
-    await uploadFile(created.uploadUrl, zip, (sent, total) => {
-      progress({ bytes: sent, total });
-      const percent = 5 + Math.floor((sent / total) * 90);
-      if (percent >= reported + 10) {
-        reported = percent;
-        event({ event: 'Progress', appFileId, appStoredFileId, traceId, message: 'Uploading ZIP directly to MinIO', progress: percent, originalFileSize });
-      }
-    });
+    await uploadFile(created.uploadUrl, zip, (sent, total) => progress({ bytes: sent, total }));
 
-    event({ event: 'Completed', appFileId, appStoredFileId, traceId, message: 'Backup upload completed', progress: 100, status: 'Complete', originalFileSize });
-    backend.log('Direct upload to MinIO completed successfully', `AppFileId: ${appFileId}, AppStoredFileId: ${appStoredFileId}`, traceId, { action: 'success' });
+    await backend.completeStoredFile(appStoredFileId, traceId);
+    appStoredFileId = null;
     finish(true, `${scan.files.length} arquivo(s)`);
     say(`[OK] Backup de ${name} enviado`, 'ok');
+    await refreshFolders();
   } catch (error) {
     const message = (error as Error).message;
     const code = (error as NodeJS.ErrnoException).code;
     const locked = code === 'EBUSY' || code === 'EPERM' || code === 'EACCES';
+    const shown = locked ? 'Arquivos em uso por outro programa' : message;
     backend?.log('Exception during synchronization processing', `AppFileId: ${appFileId}, Path: ${path}, Message: ${message}`, traceId, {
       action: 'error',
       exception: true,
     });
-    event({ event: 'Error', appFileId, appStoredFileId, traceId, message, details: (error as Error).stack ?? null, progress: 0, status: 'Error', originalFileSize });
-    sendStatus(appFileId, locked ? 'LockedFiles' : 'Unsynced', traceId);
-    finish(false, locked ? 'Arquivos em uso por outro programa' : message);
+    if (appStoredFileId !== null) {
+      await backend?.cancelStoredFile(appStoredFileId, shown, traceId).catch(() => undefined);
+    }
+    sendStatus(appFileId, locked ? 'LockedFiles' : 'Unsynced', shown, traceId);
+    finish(false, shown);
     say(`[X] Backup de ${name}: ${message}`, 'error');
-    notify('error', `Backup de ${name} falhou: ${message}`);
+    notify('error', `Backup de ${name} falhou: ${shown}`);
   } finally {
     await rm(zip, { force: true });
     updateState({ current: null });

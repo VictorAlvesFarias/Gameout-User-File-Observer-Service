@@ -1,3 +1,5 @@
+import { win32 } from 'node:path';
+
 export class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -55,8 +57,16 @@ export function optionalSecret(value: unknown, label: string): string | undefine
   return value;
 }
 
-// RabbitMQ names: letters, digits and the separators the backend uses (gameout.driver.commands).
-const amqpName = /^[A-Za-z0-9._:-]+$/;
+export function bool(body: Body, field: string, label: string): boolean {
+  const value = body[field] ?? false;
+  if (typeof value !== 'boolean') throw badRequest(`${label} inválido`);
+  return value;
+}
 
-export const amqpNameField = (body: Body, field: string, label: string, fallback: string) =>
-  text(body, field, label, { max: 200, pattern: amqpName, patternMessage: `${label}: use letras, números, ponto, hífen e dois-pontos` }) || fallback;
+/** An absolute folder on this PC: C:\Games\Saves or \\server\share\saves. */
+export function folderPath(body: Body, field: string, label: string): string {
+  const value = win32.normalize(text(body, field, label, { required: true, max: 1000 }));
+  if (!/^([A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)/.test(value)) throw badRequest(`${label} deve ser um caminho completo, como C:\\Jogos\\Saves`);
+  // C:\ keeps its slash; any other trailing one goes.
+  return value.length > 3 ? value.replace(/\\+$/, '') : value;
+}

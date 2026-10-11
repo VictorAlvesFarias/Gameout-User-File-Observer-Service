@@ -1,11 +1,13 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { api } from './api';
 import { Icon, type IconName } from './components/Icon';
 import { PanelView } from './components/PanelView';
+import { ServerLogsView } from './components/ServerLogsView';
 import { SettingsView } from './components/SettingsView';
 import type { Notice } from './types';
 import { useServerEvents } from './useServerEvents';
 
-type Tab = 'panel' | 'settings';
+type Tab = 'panel' | 'logs' | 'settings';
 
 interface Toast {
   id: number;
@@ -14,15 +16,24 @@ interface Toast {
 }
 
 const tabs: Array<{ id: Tab; label: string; icon: IconName }> = [
-  { id: 'panel', label: 'Painel', icon: 'upload' },
+  { id: 'panel', label: 'Grupos', icon: 'upload' },
+  { id: 'logs', label: 'Logs', icon: 'code' },
   { id: 'settings', label: 'Configurações', icon: 'settings' },
 ];
 
-const tabFromHash = (): Tab => (window.location.hash.slice(1) === 'settings' ? 'settings' : 'panel');
+const tabFromHash = (): Tab => {
+  const hash = window.location.hash.slice(1);
+  return tabs.some((item) => item.id === hash) ? (hash as Tab) : 'panel';
+};
 
 export function App() {
   const [tab, setTabState] = useState<Tab>(tabFromHash);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [canPickFolder, setCanPickFolder] = useState(false);
+
+  useEffect(() => {
+    api.settings().then((settings) => setCanPickFolder(settings.canPickFolder), () => undefined);
+  }, []);
 
   const notify = useCallback((kind: Toast['kind'], message: string) => {
     const id = Date.now() + Math.random();
@@ -45,7 +56,7 @@ export function App() {
       : state.current
         ? `Enviando ${state.current.name}`
         : state.backend.status === 'ok'
-          ? `${state.folders.filter((folder) => folder.watching).length} pasta(s) observada(s)`
+          ? `${state.folders.filter((folder) => folder.local).length} de ${state.folders.length} grupo(s) com pasta neste PC`
           : 'Sem conexão com o servidor';
 
   return (
@@ -73,7 +84,8 @@ export function App() {
       {!connected && <div className="banner error">Sem conexão com o serviço interno do driver. Tentando de novo…</div>}
 
       <main>
-        {tab === 'panel' && state && <PanelView state={state} log={log} onConfigure={() => setTab('settings')} onNotify={notify} />}
+        {tab === 'panel' && state && <PanelView state={state} log={log} canPickFolder={canPickFolder} onConfigure={() => setTab('settings')} onNotify={notify} />}
+        {tab === 'logs' && <ServerLogsView online={state?.backend.status === 'ok'} />}
         {tab === 'settings' && <SettingsView onSaved={() => setTab('panel')} onNotify={notify} />}
       </main>
 
